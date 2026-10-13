@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "Orbit — peer-to-peer chat rooms",
+  "short_name": "Orbit",
+  "version": "3.1.0",
+  "description": "A tiny floating dot on every website that opens serverless, peer-to-peer chat rooms you join by name. No accounts, no server.",
+  "homepage_url": "https://github.com/cocre6369/Orbit-Chat-Full",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "storage",
+    "offscreen",
+    "sidePanel",
+    "notifications",
+    "alarms",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "shared/brand.js",
+        "shared/bridge.js",
+        "content/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Orbit — toggle chat (Alt+Shift+C)",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "ui/sidepanel.html"
+  },
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Toggle the Orbit chat panel"
+    },
+    "boss-key": {
+      "suggested_key": {
+        "default": "Alt+Shift+H"
+      },
+      "description": "Boss key: instantly hide Orbit and mute sounds (press again to restore)"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'self'; script-src 'self'; object-src 'none'; connect-src 'self' wss: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  }
+}
