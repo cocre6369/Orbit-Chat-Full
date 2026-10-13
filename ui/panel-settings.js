@@ -348,11 +348,16 @@
     // fallback for side-panel/extension contexts that cannot reach the worker.
     const openTab = (url) => {
       if (!url) return;
-      try {
-        if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) { chrome.tabs.create({ url }).catch(() => {}); return; }
-      } catch (e) { /* fall through */ }
-      try { app.bridge.send({ type: 'open-url', url }); } catch (e) { /* fall through */ }
-      try { window.open(url, '_blank', 'noopener'); } catch (e) { /* give up quietly */ }
+      const fallback = () => {
+        try {
+          if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.create) { chrome.tabs.create({ url }).catch(() => {}); return; }
+        } catch (e) { /* not an extension context */ }
+        try { window.open(url, '_blank', 'noopener'); } catch (e) { /* give up quietly */ }
+      };
+      // The service worker creates the tab (a page context has no chrome.tabs); only fall back to
+      // window.open/chrome.tabs when the worker cannot be reached — never both, so one click is one tab.
+      try { app.request({ type: 'open-url', url }, 6000).then((r) => { if (!r || r.ok !== true) fallback(); }, fallback); }
+      catch (e) { fallback(); }
     };
     const version = (() => { try { return chrome.runtime.getManifest().version; } catch (e) { return O.APP_VERSION || '?'; } })();
     const linkRow = (label, help, url, ic) => h('div', { class: 'o-about-row' },

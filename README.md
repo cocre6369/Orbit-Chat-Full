@@ -131,6 +131,10 @@ way in. Orbit 3.1.0 fixed a family of bugs that used to leave a whole group stra
   *verified* hello from the member who really holds the code. A timeout or a refusal no longer rewrites
   who you are, and a room you are already hosting re-asserts `host: true` on every reconnect (which
   repairs profiles that were demoted by the old bug).
+* **A takeover is discovered, not fought over.** If a member took the room over while you were away
+  (an automatic host handoff does exactly that), the claim loop stops after ~90 s and checks whether
+  somebody is hosting the code: if they are, this device joins them as a guest of the live room instead
+  of retrying forever; if nobody answers, the reservation was stale and the code is claimed again.
 * **Guests heal themselves.** If a guest's transport gives up (host not on the matchmaker *and* every
   relay broker refused), it retries with backoff instead of sitting on a dead connection until you
   leave and rejoin by hand.
@@ -139,7 +143,9 @@ way in. Orbit 3.1.0 fixed a family of bugs that used to leave a whole group stra
   “sending” forever.
 
 Transport, topology, codes and encryption are unchanged — these are all state-machine fixes, not a new
-way to connect.
+way to connect. The chain is covered by `scripts/room-state-test.mjs` (37 cases on the real offscreen
+class) and `scripts/room-restart-test.mjs` (creates a room, then “restarts the browser” from the saved
+storage and checks the room and its host role come back).
 
 ## Test with two profiles
 
@@ -273,6 +279,10 @@ Implemented in `ui/panel.js` (capture + encoding + playback) and `offscreen/offs
   and any transport swap ends it cleanly so viewers see a proper goodbye instead of a frozen frame.
 * **Bandwidth is per viewer.** The host forwards each segment to every member, so an 800 kbps share
   costs the host roughly 800 kbps × viewers of upstream. In a full 12-person room, prefer Low.
+* **Verified offline.** `scripts/protocol-test.mjs` checks that every `screen` envelope the app sends
+  is accepted and that malformed ones (bad kind, quality, fps, missing stream id, negative viewer
+  count) are dropped, and `scripts/room-state-test.mjs` exercises the whole publish/watch state machine
+  (capability rules, fan-out metadata, duplicates, gaps → keyframe request).
 * **Tips that matter.** Share a **window** or the **whole screen** if the shared content has to keep
   running: Chrome does not render a *tab* while that tab is in the background, so a shared tab shows a
   still frame as soon as you switch away. Video only (no sound), one share at a time, and closing the
@@ -365,6 +375,9 @@ space/`-`/`_` collapse to a single `-` → trim → max 64 chars.
 | `scripts/build-vendor.sh`    | Rebuilds the local Trystero and PeerJS bundles with esbuild (see `lib/README.md`). |
 | `scripts/make-icons.py`      | Regenerates `icons/` (colour + monochrome PNGs 16/32/48/128 and `orbit.svg`) with Pillow. |
 | `scripts/gen-emoji.py`       | Regenerates `ui/emoji-data.js` from Python's Unicode database (no network). |
+| `scripts/protocol-test.mjs`  | Checks every peer-protocol envelope (accept/reject cases, including `screen`) — no dependencies: `node scripts/protocol-test.mjs`. |
+| `scripts/room-state-test.mjs`| Checks the room state machine against the real `offscreen/offscreen.js` with stubbed browser APIs: who may claim a code, the post-restart retry window, the stale-claim probe, the late-joiner keyframe restart, segment fan-out and the `host: false` rule — `node scripts/room-state-test.mjs`. |
+| `scripts/room-restart-test.mjs` | The “everyone closed the browser and came back” chain, in two phases (`seed`, then `restore`), against the real offscreen handlers: `npm i fake-indexeddb && node scripts/room-restart-test.mjs seed && node scripts/room-restart-test.mjs restore`. |
 
 ## Limitations
 

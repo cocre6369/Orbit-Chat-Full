@@ -388,15 +388,13 @@ export class Room {
    *  never produce two hosts; after the window expires we check once whether somebody else is hosting it. */
   async claimCode() {
     if (this.dead) return;
-    const CLAIM_WINDOW = 6 * 60000;      // keep asking for up to six minutes (the matchmaker frees stale ids first)
-    const PROBE_AFTER = 90000;           // but after ~90 s, check once whether somebody else hosts the code now
-    if (!this.claimUntil) { this.claimUntil = now() + CLAIM_WINDOW; this.claimStartedAt = now(); }
+    if (!this.claimUntil) { this.claimUntil = now() + CLAIM_WINDOW_MS; this.claimStartedAt = now(); }
     this.idTakenRetries = (this.idTakenRetries || 0) + 1;
     this.idTaken = false;
     // Somebody may have taken the room over while we were away (an automatic handoff, or a member who was
     // told the room was theirs). Probing once turns this device into a guest of the live room instead of
     // fighting over a code for minutes — only when nobody answers do we keep claiming it as ours.
-    if (!this.probedForHost && now() - this.claimStartedAt > PROBE_AFTER && now() < this.claimUntil) {
+    if (!this.probedForHost && now() - this.claimStartedAt > CLAIM_PROBE_MS && now() < this.claimUntil) {
       this.probedForHost = true;
       this.claiming = false;
       const found = await this.probeForHost();
@@ -422,7 +420,7 @@ export class Room {
     if (this.dead) return;
     this.claiming = false; this.probedForHost = false;
     this.claimStartedAt = now();
-    this.claimUntil = now() + 60000;
+    this.claimUntil = now() + CLAIM_WINDOW_MS;   // must outlast CLAIM_PROBE_MS so the next probe can run
     this.idTakenRetries = 0;
     this.isHost = true;
     this.lastError = 'Room code is still reserved — retrying.';
@@ -1732,6 +1730,12 @@ const SCREEN_QUALITY = {
   high: { label: 'High',   width: 1600, height: 900,  fps: 15, bitsPerSecond: 1600000, slice: 200 }
 };
 const SCREEN_WINDOW = 24;          // unacked segments allowed per viewer before the recorder pauses
+
+/* Re-entering a room we own: the PeerJS matchmaker may still hold our code from a previous session (browser
+ * restart, crash, a laptop that slept). We keep asking for it, and after a while check once whether somebody
+ * else is really hosting it (a member who took the room over) instead of fighting over the code. */
+const CLAIM_WINDOW_MS = 6 * 60000; // how long a claim is retried before the window is renewed
+const CLAIM_PROBE_MS = 90000;      // how long we retry before checking for a live host on that code
 const SCREEN_MAX_CHUNK = 64000;    // biggest segment we accept/forward (bytes, before base64)
 
 /* ------------------------------------------------------------------ */
@@ -1851,7 +1855,8 @@ async function joinRoomByCode(rawCode, password, opts = {}) {
  *  live room in the “claiming” state and keeps retrying in the background. */
 async function claimRoomCode({ id, display, password, name }) {
   const room = await roomFromCode(display, name || display, password, true);
-  room.claimUntil = now() + 5 * 60000;      // keep asking the matchmaker for our own code
+  room.claimUntil = now() + CLAIM_WINDOW_MS;     // keep asking the matchmaker for our own code
+  room.claimStartedAt = now();
   await room.loadHistory();
   await room.connect();
   rooms.set(id, room);
@@ -1872,7 +1877,7 @@ async function resumeRoom(entry) {
     // A host coming back from a restart: our own previous PeerJS id can still be reserved on the
     // matchmaker. Give the claim a window and retry instead of dropping to guest/error (the old
     // behaviour) — otherwise nobody hosts the room again and every member just sits on “Connecting…”.
-    if (entry.host) room.claimUntil = now() + 5 * 60000;
+    if (entry.host) { room.claimUntil = now() + CLAIM_WINDOW_MS; room.claimStartedAt = now(); }
     await room.loadHistory(); rooms.set(id, room); await room.connect(); room.scheduleUpdate();
     return room;
   }
