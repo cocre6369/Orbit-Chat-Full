@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orbit</title>
+  <link rel="stylesheet" href="panel.css">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="note" role="status"></div>
+  <!-- Order matters: brand → bridge → strings → emoji → kit → parts → panel → boot -->
+  <script src="../shared/brand.js"></script>
+  <script src="../shared/bridge.js"></script>
+  <script src="strings.js"></script>
+  <script src="emoji-data.js"></script>
+  <script src="ui-kit.js"></script>
+  <script src="panel-settings.js"></script>
+  <script src="panel.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>
