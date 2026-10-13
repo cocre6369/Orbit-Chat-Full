@@ -215,17 +215,18 @@
     /* ---------- screen sharing events ---------- */
     bridge.on('screen:state', (m) => {
       if (m.roomId !== S.roomId) return;
-      share.remote = m.remote || null;
+      share.gen = (share.gen || 0) + 1;
+      if (m.start || m.stopped || 'remote' in m) share.remote = m.remote || null;
       share.viewers = m.screen ? m.screen.viewers : 0;
       if (typeof m.relay === 'boolean') share.relay = m.relay;
       if (m.stopped && m.by) {
         // A stop we are told about can be aimed at us: the room keeper asked for our share to end.
         toast(t('screen_stopped_by_keeper', { name: m.by }), 'info');
         if (share.publishing) stopShare({ silent: true, reason: 'keeper' });
-      } else if (m.start && m.remote) toast(t('screen_started', { name: m.remote.name || 'Someone' }), 'info');
+      } else if (m.start && m.remote) { toast(t('screen_started', { name: m.remote.name || 'Someone' }), 'info'); armViewWatchdog(m.remote.streamId); }
       renderLive();
     });
-    bridge.on('screen:chunk', (m) => { if (m.roomId !== S.roomId) return; pushScreenChunk(m); });
+    bridge.on('screen:chunk', (m) => { if (m.roomId !== S.roomId) return; share.gen = (share.gen || 0) + 1; pushScreenChunk(m); });
     bridge.on('screen:stop', (m) => {
       if (m.roomId !== S.roomId) return;
       if (m.mine) stopShare({ silent: true });
@@ -241,6 +242,11 @@
     /* ============================================================ */
     function navigate(view, params) {
       closePopovers();
+      // Sharing is bound to the room view: leaving it (or switching rooms) stops the capture instead of
+      // leaving the browser's "sharing" bar running with nobody watching.
+      if (share.publishing && (view !== 'room' || (params && params.roomId && params.roomId !== S.roomId))) {
+        stopShare({ silent: true, reason: 'left-room' });
+      }
       S.view = view; if (params && params.roomId) S.roomId = params.roomId;
       renderCurrent(params);
       sendView();
@@ -461,6 +467,12 @@
 
     function renderRoom() {
       const roomId = S.roomId;
+      if (share.roomId !== roomId) {
+        // A different room: never show the previous room's stream (or keep its decoder running).
+        clearTimeout(share.watchdog); share.watchdog = null;
+        share.roomId = roomId; share.remote = null; share.hidden = false; share.relay = false; share.viewers = 0;
+        destroyView();
+      }
       if (imgObserver) { imgObserver.disconnect(); imgObserver = null; } // root element changes per room view
       if (attObserver) { attObserver.disconnect(); attObserver = null; }
       const wrap = h('div', { class: 'o-room' });
@@ -482,7 +494,16 @@
       applyChatBg(el.chatBg, roomId);
       updateRoomHeader(); renderMembers(); renderTyping();
       // Show a running screen share (ours or a member's) and keep the button state in sync.
-      if (!share.remote && !share.publishing) bridge.request({ type: 'screen:state', roomId }, 6000).then((res) => { if (S.roomId === roomId && S.view === 'room') { share.remote = (res && res.remote) || null; share.relay = !!(res && res.relay); renderLive(); updateShareBtn(); } }).catch(() => {});
+      if (!share.remote && !share.publishing) {
+        // Ask the offscreen document what this room is showing right now. Guarded by a generation stamp:
+        // a 'screen:state' push that lands while the reply is in flight is fresher, and the reply must
+        // never overwrite it (that race used to blank a share that had just started).
+        const gen = share.gen;
+        bridge.request({ type: 'screen:state', roomId }, 6000).then((res) => {
+          if (gen !== share.gen || S.roomId !== roomId || S.view !== 'room') return;
+          if (res && 'remote' in res) { share.remote = res.remote || null; share.relay = !!(res && res.relay); renderLive(); updateShareBtn(); }
+        }).catch(() => {});
+      }
       else { renderLive(); updateShareBtn(); }
       // scrolling
       let lastTop = 0;
@@ -1046,7 +1067,7 @@
      * document routes the encoded segments to the room and hands incoming ones back for playback.
      * Late joiners ask for a keyframe, which restarts the recorder under a new stream id so their player
      * starts from a clean WebM header. */
-    const share = { publishing: false, streamId: null, stream: null, recorder: null, quality: 'med', seq: 0, paused: false, viewers: 0, remote: null, view: null, hidden: false, relay: false, restarting: false };
+    const share = { publishing: false, streamId: null, stream: null, recorder: null, quality: 'med', seq: 0, paused: false, viewers: 0, remote: null, view: null, hidden: false, relay: false, restarting: false, gen: 0, roomId: null, watchdog: null };
     const SCREEN_CODECS = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'];
     const SCREEN_QUALITY = {
       low: { width: 960, height: 540, fps: 6, bps: 350000, slice: 400 },
@@ -1153,7 +1174,7 @@
       if (share.view && share.view.streamId === streamId) return share.view;
       destroyView();
       const video = h('video', { class: 'o-live-video', autoplay: '', muted: '', playsinline: '', 'aria-label': t('screen_share') });
-      const v = { streamId, video, queue: [], sb: null, ms: null, url: '', bytes: 0, lastSeq: -1, firstFrame: false };
+      const v = { streamId, video, queue: [], sb: null, ms: null, url: '', bytes: 0, lastSeq: -1, firstFrame: false, frames: 0, askedAt: 0, asked: 0 };
       share.view = v;
       const ctor = root.MediaSource || root.ManagedMediaSource;
       if (ctor && ctor.isTypeSupported) {
@@ -1172,7 +1193,15 @@
     function flushView(v) {
       if (!v.sb || v.sb.updating || !v.ms || v.ms.readyState !== 'open') return;
       const next = v.queue.shift();
-      if (next) { try { v.sb.appendBuffer(next); } catch (e) { /* decoding hiccup: skip this segment */ } return; }
+      if (next) {
+        try {
+          v.sb.appendBuffer(next);
+          v.frames++;
+          if (!v.firstFrame) { v.firstFrame = true; renderLive(); }   // drop the "waiting for the first frame" note
+          if (v.video.paused) v.video.play().catch(() => {});
+        } catch (e) { /* decoding hiccup: skip this segment */ }
+        return;
+      }
       // Keep memory bounded and stay near the live edge.
       try {
         const buffered = v.sb.buffered;
@@ -1184,6 +1213,25 @@
         }
       } catch (e) { /* ignore */ }
     }
+    /** Late joiners (or a viewer who lost the opening segment) get a black card until somebody asks the
+     *  sharer to restart its encoder. Ask automatically, a few times, instead of making the user find the
+     *  “Refresh video” button. */
+    function armViewWatchdog(streamId) {
+      clearTimeout(share.watchdog);
+      share.watchdog = setTimeout(() => {
+        share.watchdog = null;
+        if (S.view !== 'room' || !share.remote || share.remote.streamId !== streamId) return;
+        const v = share.view;
+        if (v && v.firstFrame) return;
+        bridge.request({ type: 'screen:keyframe', roomId: S.roomId, to: share.remote.userId, streamId }, 8000).catch(() => {});
+        if (!v || v.asked < 4) { if (v) v.asked++; armViewWatchdog(streamId); }
+      }, 3500);
+    }
+    function memberName(userId) {
+      const live = S.live.get(S.roomId);
+      const found = live && (live.members || []).find((x) => x.userId === userId);
+      return (found && found.name) || null;
+    }
     function pushScreenChunk(m) {
       const v = ensureView(m.streamId);
       if (!v) return;
@@ -1193,9 +1241,22 @@
       v.bytes += bytes.length;
       v.queue.push(bytes.buffer);
       if (v.queue.length > 200) v.queue.splice(0, v.queue.length - 200);   // never grow without bound
-      if (!v.video.isConnected) return;                                   // stream remembered, card not on screen
+      if (!v.video.isConnected) {
+        // Either this is the very first segment (the player node is not mounted yet) or the card was
+        // hidden. Adopt the stream and render so video is actually shown — the old code queued the
+        // segments and never mounted anything, so a viewer could stare at a black card forever.
+        const known = share.remote && share.remote.streamId === m.streamId;
+        if (!known) {
+          const name = memberName(m.senderId);
+          share.remote = { userId: m.senderId || null, name: name || t('screen_someone'), streamId: m.streamId, quality: '' };
+          share.hidden = false;
+        }
+        if (S.view === 'room' && el.live) renderLive();
+        if (!known) armViewWatchdog(m.streamId);
+        return;                                                            // playback starts from renderLive()
+      }
       flushView(v);
-      if (!v.video.paused) v.video.play().catch(() => {});
+      if (v.video.paused) v.video.play().catch(() => {});
     }
 
     /* ---------- the live card ---------- */
@@ -1746,7 +1807,7 @@
       closePopovers(); if (el.lightbox) { el.lightbox.remove(); el.lightbox = null; }
       // Closing the panel hides every control for the share, so stop capturing instead of leaving it running.
       if (share.publishing) stopShare({ silent: true, reason: 'panel-closed' });
-      share.remote = null; destroyView();
+      share.remote = null; destroyView(); clearTimeout(share.watchdog); share.watchdog = null;
       S.open = false; el.panel.removeAttribute('data-open'); updateBackdrop();
       if (hooks.onOpenChange) hooks.onOpenChange(false);
       if (hooks.focusDot) hooks.focusDot();

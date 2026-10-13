@@ -516,3 +516,8 @@
 .o-about-row:first-of-type { border-top: 0; }
 .o-about-label { font-weight: 650; font-size: 13px; }
 .o-live-tip { margin: 0; color: var(--o-muted); font-size: 10.5px; line-height: 1.35; }
+
+/* Poll composer: multiple-choice checkbox and the taller password label. */
+.o-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--o-text); }
+.o-check input { width: 15px; height: 15px; margin: 0; accent-color: var(--o-accent); cursor: pointer; }
+.o-password-label { margin-top: 12px; }

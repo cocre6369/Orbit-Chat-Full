@@ -119,7 +119,7 @@
     screen_starting: 'Starting screen share…', screen_denied: 'Screen sharing was cancelled or blocked by the browser.',
     screen_unavailable: 'This browser cannot capture a screen here.', screen_relay_blocked: 'Screen sharing needs a direct peer-to-peer link, and this connection is going through the relay — video would not survive it. Try again in a moment or add a TURN server in Advanced settings.',
     screen_busy: '{name} is already sharing a screen. One share at a time, please.',
-    screen_live: 'LIVE', screen_shared_by_you: 'You are sharing your screen', screen_shared_by: '{name} is sharing their screen',
+    screen_live: 'LIVE', screen_shared_by_you: 'You are sharing your screen', screen_shared_by: '{name} is sharing their screen', screen_someone: 'A member',
     screen_stop: 'Stop sharing', screen_hide: 'Hide', screen_show: 'Show stream', screen_close: 'Close stream',
     screen_watching: '{n} watching', screen_waiting: 'Waiting for the first frame…', screen_stopped: 'Screen sharing stopped.',
     screen_stopped_by_keeper: '{name}’s screen share was stopped by the room keeper.',

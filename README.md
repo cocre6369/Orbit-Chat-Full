@@ -264,9 +264,13 @@ Implemented in `ui/panel.js` (capture + encoding + playback) and `offscreen/offs
 * **Flow control.** Viewers acknowledge segments; the sharer pauses its recorder when a viewer falls
   behind (dropping encoded segments would corrupt the WebM stream the viewer is playing). A viewer that
   stops acknowledging for 25 s is dropped from the window instead of stalling everyone.
-* **Late joiners** get a *Refresh video* button (also useful after switching tabs): it asks the sharer
-  for a keyframe, which restarts the encoder under a new stream id — a self-contained stream that any
-  player can start from scratch.
+* **Late joiners** are handled without anyone pressing anything: when somebody joins while a share is
+  running, the sharer's encoder restarts under a fresh stream id so the new player starts from a clean
+  header. A viewer whose card stays black asks for that restart automatically (a few tries), and the
+  *Refresh video* button does the same on demand — useful after switching tabs.
+* **The share ends with its reason.** Closing the panel or leaving the room stops the capture (the
+  browser's "sharing" bar never keeps running unseen), the room keeper can stop somebody else's share,
+  and any transport swap ends it cleanly so viewers see a proper goodbye instead of a frozen frame.
 * **Bandwidth is per viewer.** The host forwards each segment to every member, so an 800 kbps share
   costs the host roughly 800 kbps × viewers of upstream. In a full 12-person room, prefer Low.
 * **Tips that matter.** Share a **window** or the **whole screen** if the shared content has to keep

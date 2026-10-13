@@ -263,7 +263,8 @@ export class Room {
     // Re-entry / recovery state. A room whose owner restarts the browser (or whose members all leave and
     // come back) has to reclaim its five-letter code from the PeerJS matchmaker, which may still hold the
     // old session for a while. See connect() / claimCode() / tickStatus().
-    this.claiming = false; this.claimUntil = 0; this.idTakenRetries = 0;
+    this.claiming = false; this.claimUntil = 0; this.claimStartedAt = 0; this.probedForHost = false; this.idTakenRetries = 0;
+    this.lastSelfKeyframeAsk = 0;
     this.screen = null;           // active screen share (see "Screen sharing" below)
     this.screenView = null;       // incoming screen share we are watching
   }
@@ -360,7 +361,7 @@ export class Room {
       this.statusTimer = setInterval(() => this.tickStatus(), 3000);
       // We hold the code again (or we never lost it). Make sure the saved entry keeps saying so, so the
       // next browser restart knows it may claim this code instead of joining somebody else's host.
-      this.claiming = false; this.claimUntil = 0; this.idTakenRetries = 0;
+      this.claiming = false; this.claimUntil = 0; this.claimStartedAt = 0; this.probedForHost = false; this.idTakenRetries = 0;
       if (this.isHost) { const e = roomEntry(this.id); if (e && !e.host) upsertRoomEntry(this.id, { host: true, active: true, code: this.code, lastJoined: now() }); }
       this.scheduleUpdate();
       this.tickStatus();
@@ -387,31 +388,47 @@ export class Room {
    *  never produce two hosts; after the window expires we check once whether somebody else is hosting it. */
   async claimCode() {
     if (this.dead) return;
-    const CLAIM_WINDOW = 6 * 60000;      // keep asking for up to six minutes (the server frees stale ids first)
-    this.claimUntil = this.claimUntil || (now() + CLAIM_WINDOW);
+    const CLAIM_WINDOW = 6 * 60000;      // keep asking for up to six minutes (the matchmaker frees stale ids first)
+    const PROBE_AFTER = 90000;           // but after ~90 s, check once whether somebody else hosts the code now
+    if (!this.claimUntil) { this.claimUntil = now() + CLAIM_WINDOW; this.claimStartedAt = now(); }
     this.idTakenRetries = (this.idTakenRetries || 0) + 1;
     this.idTaken = false;
+    // Somebody may have taken the room over while we were away (an automatic handoff, or a member who was
+    // told the room was theirs). Probing once turns this device into a guest of the live room instead of
+    // fighting over a code for minutes — only when nobody answers do we keep claiming it as ours.
+    if (!this.probedForHost && now() - this.claimStartedAt > PROBE_AFTER && now() < this.claimUntil) {
+      this.probedForHost = true;
+      this.claiming = false;
+      const found = await this.probeForHost();
+      if (this.dead) return;
+      if (found) { this.claimUntil = 0; this.scheduleUpdate(); return; }        // a live host: we are a guest now
+      if (now() >= this.claimUntil) return this.abandonClaim();
+    }
     if (now() < this.claimUntil) {
       this.claiming = true; this.status = 'claiming';
       this.lastError = `Room code ${String(this.code).toUpperCase()} is still held by your previous session — reclaiming it…`;
       this.scheduleUpdate();
       clearTimeout(this.reconnectTimer);
-      const delay = Math.min(15000, 4000 + this.idTakenRetries * 1000);
+      const delay = Math.min(15000, 5000 + this.idTakenRetries * 1500);
       this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; this.reconnect('reclaiming room code'); }, delay);
       return;
     }
-    // Claim window over: if a live host really is on this code, join them instead of fighting for it.
-    this.claiming = false;
-    const found = await this.probeForHost();
+    return this.abandonClaim();
+  }
+
+  /** Claim window over and no live host answered: the reservation is stale (or we are offline). Keep the
+   *  room as ours and retry quietly in the background instead of giving it up. */
+  abandonClaim() {
     if (this.dead) return;
-    if (!found) {
-      // Nobody answered: the reservation is stale or we are offline. Keep trying quietly in the background.
-      this.claimUntil = now() + 60000;
-      this.idTakenRetries = 0;
-      this.isHost = true;
-      this.lastError = 'Room code is still reserved — retrying.';
-      this.scheduleReconnect();
-    }
+    this.claiming = false; this.probedForHost = false;
+    this.claimStartedAt = now();
+    this.claimUntil = now() + 60000;
+    this.idTakenRetries = 0;
+    this.isHost = true;
+    this.lastError = 'Room code is still reserved — retrying.';
+    this.status = this.everConnected ? 'reconnecting' : 'connecting';
+    this.scheduleUpdate();
+    this.scheduleReconnect();
   }
 
   /** Try to reach a host on this code as an ordinary guest (used when our own claim is refused). */
@@ -755,6 +772,10 @@ export class Room {
       // Resume interrupted image downloads from the first newly connected peer that has the data.
       for (const inc of this.incoming.values()) if (!inc.from) this.sendEnv(this.makeEnv('image-request', { imageId: inc.imageId }), peer.transportId);
       for (const inc of this.incomingAssets.values()) if (!inc.from) this.sendEnv(this.makeEnv('asset-request', { assetId: inc.assetId }), peer.transportId);
+      // Somebody joined while a share is running: they missed the opening segment (the WebM header), so
+      // ask our own panel to restart the encoder under a fresh stream id — their player then starts from a
+      // clean header instead of showing a black rectangle. Only the sharer reacts to this request.
+      if (this.screen) this.askForOwnKeyframe();
       // Offer history to the newcomer
       if (this.shareHistory && this.messages.length) {
         const shareable = this.messages.filter((m) => !m.deleted && m.kind !== 'system');
@@ -1156,6 +1177,15 @@ export class Room {
   }
   /** A member on the relay cannot receive video: let the UI say so instead of pretending. */
   amRelayMember() { try { return ((this.tRoom && this.tRoom.diag && this.tRoom.diag().transport) || '') === 'relay'; } catch (e) { return false; } }
+
+  /** Ask our own panel to restart the encoder (new stream id) so somebody who just joined — or a viewer
+   *  who fell too far behind — gets a clean opening segment. Throttled: a burst of joiners restarts once. */
+  askForOwnKeyframe() {
+    if (!this.screen) return;
+    if (now() - (this.lastSelfKeyframeAsk || 0) < 2500) return;
+    this.lastSelfKeyframeAsk = now();
+    emitPanel({ type: 'screen:request', roomId: this.id, kind: 'keyframe' });
+  }
 
   async beginScreen({ quality } = {}) {
     const cap = this.screenCapability();
